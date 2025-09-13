@@ -1,0 +1,242 @@
+---
+title: "Dogs' Metagenomes Figure 1"
+author: "Xiaoyang Wang"
+date: "09/15/2024"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# start R analysis
+```{r setup, packages}
+
+library(dbplyr)
+library(ape)
+library(vegan)
+library(UpSetR)
+library(ggplot2)
+library(readxl)
+library(tidyverse)
+library(phyloseq)
+library(ggtree)
+
+# sessionInfo()
+
+```
+
+# data loading
+```{r load community data and build }
+meta_abun <- read_tsv("../data/2022DogMeta_abun20240409.txt")
+### community data
+community <- meta_abun %>% dplyr::select(ends_with("fna"))
+
+# filter community data, filter coverage lower than 0.4
+community_abun <- community
+community_abun[community_abun < 0.4] <- 0 # filter coverage lower than 0.4
+
+### environmental data 
+habitatN <- meta_abun %>% dplyr::select(Sample:group)
+habitatN <- meta_abun[1:4]
+habitatN$rowsums <- rowSums(community_abun)
+community_abun <- community_abun %>% dplyr::filter(habitatN$rowsums > 0)
+habitatN <- habitatN %>% dplyr::filter(habitatN$rowsums > 0)
+
+communityB <- community_abun
+communityB[communityB > 0] <- 1 # make absence/presence data
+habitatN$sprichness <- specnumber(communityB, MARGIN = 1) # number of species per sample
+habitatN$shannonIndex <- diversity(communityB, index = "shannon")
+
+```
+
+# Figure 1A
+```{r beta, PCOA}
+# PCoA 
+commNoSinleton <- communityB[, which(specnumber(communityB, MARGIN=2) > 1)]
+pcoa = pcoa(vegdist(commNoSinleton, method = "bray"))
+
+#### PCoA of all group
+pcoa_point = data.frame(pcoa$vectors[, c(1, 2)], Category = habitatN$group)
+pcoa_point$Group = substring(pcoa_point[, 3], 1, 2)
+
+xylab = paste(c("Axis.1 [", "Axis.2 ["), round(pcoa$values$Relative_eig[1:2]*100, 2), "%]", sep = "")
+
+mycolor <- c("#3B499299", "#EE000099", "#008B4599", "#A2005699", "#00828099", "#1B191999", "#63187999")
+
+ggplot(pcoa_point,aes(x=Axis.1, y=Axis.2,color=Category))+geom_point(size=2)+theme_bw()+theme(panel.grid = element_blank())+
+  labs(x=xylab[1], y=xylab[2], title = paste('Bray-Curtis PCoA')) +
+    scale_color_manual(values = mycolor)
+
+
+```
+
+# Figure 1B
+```{r UpSetR}
+### UpSetR for 7 groups
+
+Zwolf <- communityB %>% dplyr::filter(habitatN$group %in% c("Zwolf"))
+Wwolf <- communityB %>% dplyr::filter(habitatN$group %in% c("Wwolf"))
+Pdog <- communityB %>% dplyr::filter(habitatN$group %in% c("Pdog"))
+Idog <- communityB %>% dplyr::filter(habitatN$group %in% c("Idog"))
+Wdog <- communityB %>% dplyr::filter(habitatN$group %in% c("Wdog"))
+human <- communityB %>% dplyr::filter(habitatN$group %in% c("human"))                   
+macaque <- communityB %>% dplyr::filter(habitatN$group %in% c("macaque"))
+
+cname <- c("Zwolf","Wwolf","Pdog","Idog","Wdog", "human","macaque")
+comm4inext_abun <- matrix(c(colSums(Zwolf), colSums(Wwolf), colSums(Pdog), colSums(Idog),colSums(Wdog), colSums(human), colSums(macaque)), ncol = 7) #
+
+colnames(comm4inext_abun) <- cname
+colnameW <- colnames(human)
+rownames(comm4inext_abun) <- colnameW
+
+comm4inext_abun <- as.data.frame(comm4inext_abun) 
+# write.table(comm4inext_abun, file = "group7_taxon_data.txt", sep = "\t")
+
+comm4inext_abun[comm4inext_abun>0] <- 1
+upset(comm4inext_abun, 
+      sets = c("human","macaque","Idog","Wdog","Pdog","Wwolf","Zwolf"),#指定展示的集合
+      nset = 5, #集合范围的限制
+      nintersects = 16, #需要绘制的交集数目
+      order.by = c('degree','freq'), decreasing = c(F, T),#排序
+      mb.ratio = c(0.7, 0.3),#柱状图与矩阵点图之间的比例大小
+      number.angles = 0,#柱子上方数字倾斜角度
+      point.size = 1.8,#矩阵中圆圈的大小
+      line.size = 1, #矩阵点图中点和线的大小
+      shade.color = "red",#矩阵点图阴影的颜色
+      mainbar.y.label = "Intersection size", #条形图的轴标签
+      sets.x.label = "Set Size", #柱状图的轴标签
+      main.bar.color = "#73BAD6", #柱状图柱子颜色
+      sets.bar.color = "#3b7960",#条形图条形的颜色
+      matrix.color = "#033250",#矩阵中交集点的颜色
+      text.scale = c(1.3, 1.3, 1, 1, 1.2, 1),#文本大小设置，分别对应intersection size title，intersection size tick labels，set size title，set size tick labels，set names，numbers above bars
+      keep.order = TRUE,#让集合按照 sets 参数中指定的出现的顺序排列
+      #queries = list(list(query = intersects, 
+                          #params = list("Thriller","Action"),
+                          #active = T,color="#EF4143" ))
+)
+
+```
+
+# Figure 1C, left
+```{r community dendrogram}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("phyloseq")
+# BiocManager::install("ggtree")
+# BiocManager::install("KEGGREST")
+# BiocManager::install("clusterProfiler")
+
+# data reading. 
+otu_table <- t(communityB)
+colnames(otu_table) <- habitatN$Sample
+otu_table <- as.data.frame(otu_table)
+
+metadata <- matrix(c(habitatN$Sample, habitatN$group), ncol = 2)
+name <- c("Sample", "group")
+
+colnames(metadata) <- name
+metadata <- as.data.frame(metadata)
+rownames(metadata) <- metadata$Sample
+
+# transfer to phyloseq object
+otu_matrix <- as.matrix(otu_table)
+otu_ps <- otu_table(otu_matrix, taxa_are_rows = TRUE)
+sample_data <- sample_data(metadata)
+physeq <- phyloseq(otu_ps, sample_data)
+
+grouped_physeq <- phyloseq::merge_samples(physeq, "group")
+
+# calculating Bray-Curtis distance between groups
+distance_matrix <- vegdist(otu_table(grouped_physeq), method = "bray")
+
+# hclust clustering
+hc <- hclust(distance_matrix, method = "average")
+
+# transfer cluster results to dendrogram
+phylo_tree <- as.phylo(hc)
+
+# ggtree visalization
+p <- ggtree(phylo_tree) + geom_tiplab()
+print(p)
+
+```
+
+# Figure 1C, right
+```{r load Functional data and build}
+meta_abun <- read_tsv("../data/eggnogKEGG_ko_sample02.txt")
+
+### community data
+community <- meta_abun %>% dplyr::select(starts_with("K"))
+
+community_abun <- community
+
+### meta data 
+habitatN <- meta_abun %>% dplyr::select(Sample:group)
+habitatN$rowsums <- rowSums(community_abun)
+community_abun <- community_abun %>% dplyr::filter(habitatN$rowsums > 0)
+habitatN <- habitatN %>% dplyr::filter(habitatN$rowsums > 0)
+
+communityB <- community_abun
+communityB <- communityB[colSums(communityB) > 0]
+
+
+```
+
+```{r functional dendrogram}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("phyloseq")
+# BiocManager::install("ggtree")
+# BiocManager::install("KEGGREST")
+# BiocManager::install("clusterProfiler")
+
+# data reading. 
+otu_table <- t(communityB)
+colnames(otu_table) <- habitatN$Sample
+otu_table <- as.data.frame(otu_table)
+
+metadata <- matrix(c(habitatN$Sample, habitatN$group), ncol = 2)
+name <- c("Sample", "group")
+
+colnames(metadata) <- name
+metadata <- as.data.frame(metadata)
+rownames(metadata) <- metadata$Sample
+
+# transfer to phyloseq object
+otu_matrix <- as.matrix(otu_table)
+otu_ps <- otu_table(otu_matrix, taxa_are_rows = TRUE)
+sample_data <- sample_data(metadata)
+physeq <- phyloseq(otu_ps, sample_data)
+
+grouped_physeq <- phyloseq::merge_samples(physeq, "group")
+
+# calculating Bray-Curtis distance between groups
+distance_matrix <- vegdist(otu_table(grouped_physeq), method = "bray")
+
+# hclust clustering
+hc <- hclust(distance_matrix, method = "average")
+
+# transfer cluster results to dendrogram
+phylo_tree <- as.phylo(hc)
+
+# ggtree visalization
+p <- ggtree(phylo_tree) + geom_tiplab()
+print(p)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
